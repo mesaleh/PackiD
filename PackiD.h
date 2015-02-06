@@ -12,7 +12,7 @@
 #include <vector>
 #include <map>
 #include <cstring>
-#include "PE.h"
+#include "headers/PE.h"
 
 struct Signature
 {

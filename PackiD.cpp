@@ -10,9 +10,9 @@
 #include <fstream>
 #include <exception>
 #include <algorithm>
-#include "PE.h"
+#include "headers/PE.h"
+#include "headers/Util.h"
 #include "PackiD.h"
-#include "Util.h"
 
 void PackiD::init()
 {

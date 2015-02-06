@@ -15,11 +15,9 @@
 
 #include <iostream>
 #include <ctime>
-#include <iomanip>
-#include <windows.h>
-#include "PE.h"
+#include "headers/PE.h"
+#include "headers/Util.h"
 #include "PackiD.h"
-#include "Util.h"
 
 using namespace std;
 
@@ -34,12 +32,8 @@ int main(int argc, char* argv[])
 	  return 0;
 	}
 
-	int i;
-	if(!strcmp(argv[1], "-d"))	i = 2;
-	else						i = 1;
-
-	int TotalFiles = argc - i;
-	int matched = 0;
+	int TotalFiles = argc - 1;
+	int matches = 0;
 
 	cout << "Loading signature database." << endl;
 
@@ -56,7 +50,7 @@ int main(int argc, char* argv[])
 	start_s = clock();
 
 
-	for(; i < argc; i++)
+	for(int i = 1; i < argc; i++)
 	{
 		PE P;
 		cout << "Processing file '" << getFileName(argv[i]).c_str() << "': ";
@@ -66,26 +60,16 @@ int main(int argc, char* argv[])
 			continue;
 		}
 
-		try
-		{
-			string result = iD.scanPE(P);
-			if(result.compare(NO_MATCH)) {
-				cout << result << endl;
-				matched++;
-			}			
-			else	cout << "mismatch!" << endl;
-		}
-		catch (std::exception& e)
-		{
-			std::cerr << "exception caught: " << e.what() << '\n';
-			break;
-		}
-
-
+		string result = iD.scanPE(P);
+		if(result.compare(NO_MATCH)) {
+			cout << result << endl;
+			matches++;
+		}			
+		else	cout << "mismatch!" << endl;
 	}
 
 	stop_s = clock();
-	cout << endl << "Finished scanning in: " << (double)(stop_s-start_s)/double(CLOCKS_PER_SEC)*1000 << "ms - matched " << matched << " of " << TotalFiles << " files." << endl;
+	cout << endl << "Finished scanning in: " << (double)(stop_s-start_s)/double(CLOCKS_PER_SEC)*1000 << "ms - matched " << matches << " of " << TotalFiles << " files." << endl;
 
 	return 0;
 }
