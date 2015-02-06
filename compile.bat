@@ -1,1 +1,1 @@
-g++ -static main.cpp PackiD.cpp headers/PE.cpp headers/Util.cpp -o CmdPEiD.exe -std=gnu++11 -O3 -Wl,--strip-all
+g++ -static main.cpp PackiD.cpp headers/PE.cpp headers/Util.cpp -o PackiD.exe -std=gnu++11 -O3 -Wl,--strip-all -I./../ -I./../headers

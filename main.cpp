@@ -15,8 +15,9 @@
 
 #include <iostream>
 #include <ctime>
-#include "headers/PE.h"
+#include <fstream>
 #include "headers/Util.h"
+#include "headers/PE.h"
 #include "PackiD.h"
 
 using namespace std;
