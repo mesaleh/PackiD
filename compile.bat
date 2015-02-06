@@ -1,0 +1,1 @@
+g++ -static main.cpp PackiD.cpp PE.cpp Util.cpp -o CmdPEiD.exe -std=gnu++11 -O3 -Wl,--strip-all
