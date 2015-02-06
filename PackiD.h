@@ -30,8 +30,6 @@ struct Signature
 #define SIGFIELD		"signature = "
 #define SIGFIELD_LEN	sizeof(SIGFIELD) - 1	// minus 1 because sizeof() counts null
 
-#define WC_BYTE_VAL		256						// a value in IndexMap to indicate a place of a wildcard
-
 #define MODE_NORMAL		0						// Scan only with signatures with ep_only = true, only at the ep
 #define MODE_DEEP		1						// Normal mode + use signatures with ep_only = false to scan with them the whole section of the ep
 #define MODE_HARDCORE	2						// Normal mode + use signatures with ep_only = false to scan with them the entire file
