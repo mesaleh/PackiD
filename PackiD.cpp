@@ -167,7 +167,6 @@ bool PackiD::loadDB(char* FileName)
 	DbLoaded = true;
 	
 	return true;
-
 }
 
 
