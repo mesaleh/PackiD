@@ -57,6 +57,28 @@ PE::PE(char* fname)
 	FileName = fname;
 }
 
+
+DWORD PE::getOffsetFromRva(DWORD rva)
+{
+	/*	When translating RVA to physical offset, RVA is valid if it was within the image, that is, the start of the MZ header until the end of the last section's SizeOfRawData.
+		If RVA was in the overlay (padding) of the physical file, or within the VirtualSize of the section but outside the SizeOfRawData, then it should be invalid.
+	*/
+	PIMAGE_SECTION_HEADER Section;
+	if (Section = getSection(rva)) {
+		// we could get a containing section, but still the rva outside the physical file in case of VirtualSize > SizeOfRawData
+		// so we need to check if rva > FileSize
+		rva = rva - Section->VirtualAddress + Section->PointerToRawData;
+		if (rva > FileSize)	return -1;
+		return rva;
+	}
+
+	// if the file has no sections or the rva in the header
+	Section = getFirstSection();
+	if (!Section || rva < Section->VirtualAddress)	return rva;
+
+	return -1;
+}
+
 /* Loads the file ONLY if it's a PE file */
 LPVOID PE::loadPE(char* FileName)
 {
@@ -98,7 +120,7 @@ bool PE::isPE(LPVOID FileHandle)
 {
 	if(FileHandle == NULL) return false;
 
-	if(*(WORD *)LoadAddr != 0x5A4D)	return false;		// test for 'MZ'
+	if(*(WORD *)LoadAddr != 0x5A4D)	return false;			// test for 'MZ'
 
 	// get PE header
 	DWORD *sig = (DWORD *) getPEoffset();
@@ -111,7 +133,7 @@ bool PE::isPE(LPVOID FileHandle)
 void PE::unloadFile()
 {
 	if(LoadAddr) {
-		delete LoadAddr;
+		delete[] LoadAddr;
 		LoadAddr = NULL;
 	}
 }
@@ -123,6 +145,13 @@ void PE::unloadPE()
 
 DWORD PE::getPEoffset()
 {
+	/*
+	// consider rewrite it as:
+	IMAGE_DOS_HEADER* pidh = (IMAGE_DOS_HEADER*)LoadAddr;
+    IMAGE_NT_HEADERS* pinh = (IMAGE_NT_HEADERS*)((ULONG_PTR)(LoadAddr)+pidh->e_lfanew);
+
+	*/
+
 	unsigned int index = *(int *) ((char *)LoadAddr + 0x3C);
 	if(index >= FileSize)	return 0;
 
@@ -138,7 +167,7 @@ DWORD PE::getEntryPoint()
 	if(isPE64())
 		return PEheader64->OptionalHeader.AddressOfEntryPoint;
 	
-	return PEheader->OptionalHeader.AddressOfEntryPoint;			
+	return PEheader->OptionalHeader.AddressOfEntryPoint;
 	
 }
 
@@ -217,7 +246,7 @@ PIMAGE_SECTION_HEADER PE::getSection(DWORD RVA)
 	// check which section EP is pointing to
 	for (unsigned int i = 0; i < NumberOfSections; i++, Section++)
 	{
-		if ((RVA >= Section->VirtualAddress) && (RVA < Section->VirtualAddress+Section->Misc.VirtualSize))
+		if ((RVA >= Section->VirtualAddress) && ( RVA < Section->VirtualAddress + max(Section->Misc.VirtualSize, Section->SizeOfRawData) ))
 			return Section;
 	}
 
@@ -243,11 +272,17 @@ vector<string> PE::getModuleAPIs(T pThunk, PIMAGE_SECTION_HEADER IT)
 {
 	vector<string> APIs;
 
-	if( ((DWORD)pThunk < ((DWORD)LoadAddr + IT->PointerToRawData)) || ((DWORD)pThunk > ((DWORD)LoadAddr + IT->PointerToRawData + IT->SizeOfRawData)) ) {
+	// check if IMAGE_THUNK_DATA is within the section of Import directory, otherwise, most likely the file is packed or manualy manipulated.
+	if (((DWORD)pThunk < ((DWORD)LoadAddr + IT->PointerToRawData)) || ((DWORD)pThunk >((DWORD)LoadAddr + IT->PointerToRawData + IT->SizeOfRawData))) {
+		Suspicious |= SUSPICIOUS_IMPORTS;
+	}
+
+	// check if IMAGE_THUNK_DATA points out of file boundaries.
+	if (((DWORD)pThunk < ((DWORD)LoadAddr)) || ( ((DWORD)pThunk + sizeof(*pThunk)) > ((DWORD)LoadAddr + FileSize)) ) {
 		Suspicious |= CORRUPTED_IMPORTS;
 		return APIs;
-	}	
-	
+	}
+
 	ULONGLONG iIMAGE_ORDINAL_FLAG;
 	if(isPE64())
 		iIMAGE_ORDINAL_FLAG = IMAGE_ORDINAL_FLAG64;
@@ -255,20 +290,38 @@ vector<string> PE::getModuleAPIs(T pThunk, PIMAGE_SECTION_HEADER IT)
 		iIMAGE_ORDINAL_FLAG = IMAGE_ORDINAL_FLAG32;
 
 	if(pThunk->u1.Ordinal & iIMAGE_ORDINAL_FLAG)	fImportByOrdinal = true;	
-
-	// if import by name only not ordinal
+		
 	while(pThunk->u1.Ordinal)
 	{
 		string API;
 
 		// if import by name
 		if(!(pThunk->u1.Ordinal & iIMAGE_ORDINAL_FLAG)) {
-			PIMAGE_IMPORT_BY_NAME pStr = (PIMAGE_IMPORT_BY_NAME)((DWORD) LoadAddr + pThunk->u1.AddressOfData - IT->VirtualAddress+IT->PointerToRawData);
-			if( ((DWORD)pStr < ((DWORD)LoadAddr + IT->PointerToRawData)) || ((DWORD)pStr > ((DWORD)LoadAddr + IT->PointerToRawData + IT->SizeOfRawData)) ) {
+			// Yup, ApiNameOffset is DWORD, 32bit, for both 32bit and 64bit executables, assuming we've not yet seen an 64bit executable > 4GB.
+			DWORD ApiNameOffset = getOffsetFromRva(pThunk->u1.AddressOfData) + FIELD_OFFSET(IMAGE_IMPORT_BY_NAME, Name);
+
+			// within file boundaries ?
+			if (ApiNameOffset > FileSize) {
 				Suspicious |= CORRUPTED_IMPORTS;
-				return APIs;
 			}
-			API = (char*)(pStr->Name);
+			else {
+				DWORD i = ApiNameOffset;
+				while (i < FileSize && LoadAddr[i] != 0 && (i - ApiNameOffset < MAX_API_NAME)) i++;	// There is no unallowed chars for API name.	
+				/*
+				* There are three cases here:
+				* 
+				* 1- If the size = MAX_API_NAME, Win loader's RtlInitString() will take the first MAX_API_NAME name regardless of the "real" size. That would be the API that will be looked for.
+				* 2- If the Name was shorter that MAX_API_NAME but passes the file size, most likely the memory location at the offset "file size"
+				* will be 0, so the loader will read the zero and terminates the string. 
+				* Unless in very rare condition that the file ends exactly at the boundary of a memory page and accessing next page will fire an exception.
+				* For those two cases, we'll get the string up until the boundary, MAX_API_NAME or FileSize.
+				* 3- The file we're scanning is a good file that respects itself and has a normal API name, which is a case we don't usually encounter when dealing with malware :)
+				*/
+				if ((i >= FileSize) || (i - ApiNameOffset >= MAX_API_NAME))
+					Suspicious |= SUSPICIOUS_IMPORTS;
+				
+				API = string((char*) &LoadAddr[ApiNameOffset], i - ApiNameOffset);
+			}
 		}
 		// else if import by ordinal
 		else {
@@ -323,64 +376,88 @@ vector<Module> PE::getImports()
 	}
 
 	PIMAGE_IMPORT_DESCRIPTOR  imd = (PIMAGE_IMPORT_DESCRIPTOR) (LoadAddr + ImportOffset - IT->VirtualAddress + IT->PointerToRawData );
-		
+	
 	if( ((DWORD)imd < ((DWORD)LoadAddr + IT->PointerToRawData)) || ((DWORD)imd > ((DWORD)LoadAddr + IT->PointerToRawData + IT->SizeOfRawData)) ) {
+		Suspicious |= SUSPICIOUS_IMPORTS;
+	}
+
+	// outside the file boundaries
+	if (((DWORD)imd < ((DWORD)LoadAddr)) || ( ((DWORD)imd + sizeof(IMAGE_IMPORT_DESCRIPTOR)) >((DWORD)LoadAddr + FileSize))) {
 		Suspicious |= CORRUPTED_IMPORTS;
 		return Modules;
-	}		
+	}
 
-	if(imd == 0 || imd->Name == 0 || imd->Characteristics == 0)
+	// some files compiled with Borland compiler have imd->Characteristics = 0.
+	if ((signed)imd->Characteristics <= 0 && imd->FirstThunk != 0)	imd->Characteristics = imd->FirstThunk;
+
+	if (imd == 0 || imd->Name == 0 || (signed)imd->Characteristics <= 0)
 	{
 		Suspicious |= CORRUPTED_IMPORTS;
 		return Modules;
 	}
 	
 	// get modules
-	while(imd != 0 && imd->Name != 0 && imd->Characteristics != 0) {
-
+	while (imd != 0 && imd->Name != 0 && imd->FirstThunk != 0) {
+		
 		// within section ?
 		if( (imd->Name < IT->VirtualAddress) || (imd->Name > (IT->VirtualAddress + IT->SizeOfRawData)) ) {
-			Suspicious |= CORRUPTED_IMPORTS;
-			return Modules;
+			Suspicious |= SUSPICIOUS_IMPORTS;
 		}
 
-		DWORD ModuleNameAddr = (DWORD) ((DWORD)LoadAddr + imd->Name - IT->VirtualAddress + IT->PointerToRawData );
+		DWORD ModuleNameOffset = getOffsetFromRva(imd->Name);
+		Module mod;
 
-		// check that name ends within region 
-		DWORD i = (DWORD) (imd->Name - IT->VirtualAddress + IT->PointerToRawData);
-		while(LoadAddr[i] != 0 && i < (IT->PointerToRawData + IT->SizeOfRawData))	i++;
-		if(i >= (IT->PointerToRawData + IT->SizeOfRawData)) {
+		// within file boundaries ?
+		if (ModuleNameOffset >= FileSize) {
 			Suspicious |= CORRUPTED_IMPORTS;
-			return Modules;
+		}
+		else {
+			// check that name ends within region 
+			DWORD i = ModuleNameOffset;
+			/*	Tip: why not just checking for zero at the end of string? Because if the last non null char of the string was the last byte in the file.
+				windows loader will consider the name valid and load the module. Check fbd90df9cc16cc5b2b24271dfb5bb9e7aad950ccd72c154804b286ebc5b8e21d as example
+			*/
+			while (i < FileSize && LoadAddr[i] != 0 && (i - ModuleNameOffset < MAX_API_NAME)) i++;
+			if ((i >= FileSize) || (i - ModuleNameOffset >= MAX_PATH))
+				Suspicious |= SUSPICIOUS_IMPORTS;
+
+			mod.name = string((char*)&LoadAddr[ModuleNameOffset], i - ModuleNameOffset);
 		}
 		// end name checking
 
-		Module mod;
-		mod.name = (char*) ModuleNameAddr;
-
+		vector<string> APIs;
 		// check if valid length
 		if(mod.name.length() == 0) {
 			Suspicious |= CORRUPTED_IMPORTS;
-			//return ModulesAPIs;
+		}
+		else {			
+			// get APIs inside each module
+			if(isPE64()) {
+				PIMAGE_THUNK_DATA64 pThunk = (PIMAGE_THUNK_DATA64) (LoadAddr + imd->Characteristics - IT->VirtualAddress + IT->PointerToRawData );
+				APIs = getModuleAPIs(pThunk, IT);
+			}
+			else {
+				PIMAGE_THUNK_DATA32 pThunk = (PIMAGE_THUNK_DATA32)(LoadAddr + imd->Characteristics - IT->VirtualAddress + IT->PointerToRawData);
+				APIs = getModuleAPIs(pThunk, IT);
+			}
 		}
 
-		vector<string> APIs;
-		// get APIs inside each module
-		if(isPE64()) {
-			PIMAGE_THUNK_DATA64 pThunk = (PIMAGE_THUNK_DATA64) (LoadAddr + imd->Characteristics - IT->VirtualAddress + IT->PointerToRawData );
-			APIs = getModuleAPIs(pThunk, IT);			
-		}
-		else {
-			PIMAGE_THUNK_DATA32 pThunk = (PIMAGE_THUNK_DATA32) (LoadAddr + imd->Characteristics - IT->VirtualAddress + IT->PointerToRawData );
-			APIs = getModuleAPIs(pThunk, IT);	
-		}
-		
 		mod.APIs = APIs;
 		Modules.push_back(mod);
-
+		
 		imd++;
-	}
 
+		if ((DWORD)imd + sizeof(*imd) >= (DWORD)LoadAddr + FileSize)
+			break;
+
+		// some files compiled with Borland compiler have imd->Characteristics = 0. But in all PEs if FirstThunk = 0, that means the end of imports
+		// so why not I use imd->FirstThunk instead of imd->Characteristics?, because microsoft "optimized" some system DLLs so that fields pointed to by imd->FirstThunk
+		// contains absolute addresses rather than pointers.
+		if ((signed)imd->Characteristics <= 0 && imd->FirstThunk != 0)	
+			imd->Characteristics = imd->FirstThunk; 
+
+	}
+	
 	return Modules;
 }
 
@@ -413,6 +490,8 @@ vector<PIMAGE_SECTION_HEADER> PE::getSections()
 	for (unsigned int i = 0; i < NumberOfSections; i++, Section++)
 	{		
 		Sections.push_back(Section);
+		// check bounds
+		if (Section->PointerToRawData + Section->SizeOfRawData > FileSize)	Suspicious |= SECTION_OUTOFBOUND;
 
 		// if it's EP section
 		if ((EP >= Section->VirtualAddress) && (EP < Section->VirtualAddress+Section->Misc.VirtualSize))
@@ -420,9 +499,7 @@ vector<PIMAGE_SECTION_HEADER> PE::getSections()
 			if((strncmp((char *)Section->Name, ".text", IMAGE_SIZEOF_SHORT_NAME) != 0) && \
 				(strncmp((char *)Section->Name, "CODE", IMAGE_SIZEOF_SHORT_NAME) != 0) )
 					Suspicious |= EXEC_SECTION_IS_NOT_TEXT;
-
-			// check bounds
-			if(Section->PointerToRawData + Section->SizeOfRawData > FileSize)	Suspicious |= SECTION_OUTOFBOUND;	
+				
 			EpSection = Section;
 		}
 	}

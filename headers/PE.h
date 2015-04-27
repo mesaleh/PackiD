@@ -12,10 +12,15 @@
 
 
 // Suspicious flags, it's 8 flags set if PE file exhibits suspicious features
-#define	EXEC_SECTION_IS_NOT_TEXT	0x01		// if the section pointed to by entry point is not .text or CODE
+#define	EXEC_SECTION_IS_NOT_TEXT	0x01			// if the section pointed to by entry point is not .text or CODE
 #define NO_IMPORTS					0x02
 #define CORRUPTED_IMPORTS			0X04
-#define SECTION_OUTOFBOUND			0X08		// Section size passes file size
+#define SECTION_OUTOFBOUND			0X08			// Section size passes file size
+#define SUSPICIOUS_IMPORTS			0X10			// if import is valid and not corrupted but exist in unusual place, such as outside the section of import directory.
+
+#define MAX_USHORT					((USHORT)-1)
+// max number of characters in API name, excluding terminating NULL (That's 0xFFFE 65,534 .. a limit by RtlInitString, Thank you Peter Ferrie!.)
+#define MAX_API_NAME				MAX_USHORT-1
 
 #include <iostream>
 #include <fstream>
@@ -46,11 +51,15 @@ private:
 	//==== cached elements. Used to avoid recalculating parts of the PE ===//
 	PIMAGE_SECTION_HEADER	EpSection;
 
+	void init();
+
+	DWORD getOffsetFromRva(DWORD rva);
+
 public:
 	char*				FileName;
 	ifstream			FileHandle;
 	LPBYTE				LoadAddr;				// address of where the file loaded in memory now
-	DWORD		FileSize;
+	DWORD				FileSize;
 
 												// so other functions use it directly without loading it.
 	PIMAGE_NT_HEADERS	PEheader;
@@ -66,9 +75,7 @@ public:
 	~PE();
 
 	PE(char* FileName);
-
-	void init();
-
+	
 	LPVOID loadPE()		{ return loadPE(FileName); }
 	LPVOID loadPE(char* FileName);
 
