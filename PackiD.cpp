@@ -189,6 +189,8 @@ string PackiD::scanPE(PE &P)
 		SizeOfHeaders = P.PEheader->OptionalHeader.SizeOfHeaders;
 	}
 
+	if (FileAlignment == 0) FileAlignment = 0x200;	// valid for both 32/64 bit.
+
 	// entry point is in header
 	if(P.getExecSection() == NULL) {
 		if(P.getEntryPoint() > P.FileSize)	return result;
