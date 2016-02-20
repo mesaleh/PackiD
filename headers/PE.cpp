@@ -63,13 +63,14 @@ DWORD PE::getOffsetFromRva(DWORD rva)
 	/*	When translating RVA to physical offset, RVA is valid if it was within the image, that is, the start of the MZ header until the end of the last section's SizeOfRawData.
 		If RVA was in the overlay (padding) of the physical file, or within the VirtualSize of the section but outside the SizeOfRawData, then it should be invalid.
 	*/
+	DWORD offset = -1;
 	PIMAGE_SECTION_HEADER Section;
 	if (Section = getSection(rva)) {
 		// we could get a containing section, but still the rva outside the physical file in case of VirtualSize > SizeOfRawData
 		// so we need to check if rva > FileSize
-		rva = rva - Section->VirtualAddress + Section->PointerToRawData;
-		if (rva > FileSize)	return -1;
-		return rva;
+		offset = rva - Section->VirtualAddress + Section->PointerToRawData;
+		if (offset > FileSize)	return -1;
+		return offset;
 	}
 
 	// if the file has no sections or the rva in the header
@@ -246,7 +247,7 @@ PIMAGE_SECTION_HEADER PE::getSection(DWORD RVA)
 	// check which section EP is pointing to
 	for (unsigned int i = 0; i < NumberOfSections; i++, Section++)
 	{
-		if ((RVA >= Section->VirtualAddress) && ( RVA < Section->VirtualAddress + max(Section->Misc.VirtualSize, Section->SizeOfRawData) ))
+		if ((RVA >= Section->VirtualAddress) && ( RVA < Section->VirtualAddress + Section->Misc.VirtualSize ))
 			return Section;
 	}
 
@@ -289,7 +290,9 @@ vector<string> PE::getModuleAPIs(T pThunk, PIMAGE_SECTION_HEADER IT)
 	else
 		iIMAGE_ORDINAL_FLAG = IMAGE_ORDINAL_FLAG32;
 
-	if(pThunk->u1.Ordinal & iIMAGE_ORDINAL_FLAG)	fImportByOrdinal = true;	
+	if (pThunk->u1.Ordinal & iIMAGE_ORDINAL_FLAG) {
+		fImportByOrdinal = true;	pThunk->u1.Ordinal &= 0x0000FFFF;
+	}
 		
 	while(pThunk->u1.Ordinal)
 	{
@@ -375,7 +378,7 @@ vector<Module> PE::getImports()
 		return Modules;
 	}
 
-	PIMAGE_IMPORT_DESCRIPTOR  imd = (PIMAGE_IMPORT_DESCRIPTOR) (LoadAddr + ImportOffset - IT->VirtualAddress + IT->PointerToRawData );
+	PIMAGE_IMPORT_DESCRIPTOR  imd = (PIMAGE_IMPORT_DESCRIPTOR)(LoadAddr + getOffsetFromRva(ImportOffset));
 	
 	if( ((DWORD)imd < ((DWORD)LoadAddr + IT->PointerToRawData)) || ((DWORD)imd > ((DWORD)LoadAddr + IT->PointerToRawData + IT->SizeOfRawData)) ) {
 		Suspicious |= SUSPICIOUS_IMPORTS;
@@ -421,7 +424,10 @@ vector<Module> PE::getImports()
 			if ((i >= FileSize) || (i - ModuleNameOffset >= MAX_PATH))
 				Suspicious |= SUSPICIOUS_IMPORTS;
 
-			mod.name = string((char*)&LoadAddr[ModuleNameOffset], i - ModuleNameOffset);
+			else {
+				mod.name = string((char*)&LoadAddr[ModuleNameOffset], i - ModuleNameOffset);
+				if (!isValidPath(mod.name))		mod.name = "";
+			}
 		}
 		// end name checking
 
@@ -433,17 +439,16 @@ vector<Module> PE::getImports()
 		else {			
 			// get APIs inside each module
 			if(isPE64()) {
-				PIMAGE_THUNK_DATA64 pThunk = (PIMAGE_THUNK_DATA64) (LoadAddr + imd->Characteristics - IT->VirtualAddress + IT->PointerToRawData );
+				PIMAGE_THUNK_DATA64 pThunk = (PIMAGE_THUNK_DATA64) (LoadAddr + getOffsetFromRva(imd->Characteristics));
 				APIs = getModuleAPIs(pThunk, IT);
 			}
 			else {
-				PIMAGE_THUNK_DATA32 pThunk = (PIMAGE_THUNK_DATA32)(LoadAddr + imd->Characteristics - IT->VirtualAddress + IT->PointerToRawData);
+				PIMAGE_THUNK_DATA32 pThunk = (PIMAGE_THUNK_DATA32) (LoadAddr + getOffsetFromRva(imd->Characteristics));
 				APIs = getModuleAPIs(pThunk, IT);
 			}
-		}
-
-		mod.APIs = APIs;
-		Modules.push_back(mod);
+			mod.APIs = APIs;
+			Modules.push_back(mod);
+		}		
 		
 		imd++;
 
