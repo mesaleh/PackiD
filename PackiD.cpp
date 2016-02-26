@@ -191,61 +191,50 @@ string PackiD::scanPE(PE &P)
 
 	if (FileAlignment == 0) FileAlignment = 0x200;	// valid for both 32/64 bit.
 
-	// entry point is in header
-	if(P.getExecSection() == NULL) {
-		if(P.getEntryPoint() > P.FileSize)	return result;
+	// if no section found
+	if(P.getExecSection() == NULL || P.getEntryPoint() > P.FileSize)	return result;
+		
+	// round up SizeOfRawData
+	EPSizeOfRawData = roundUp(P.getExecSection()->SizeOfRawData, FileAlignment);
+	EPSizeOfRawData = min(P.getExecSection()->Misc.VirtualSize, EPSizeOfRawData);
 
-		EPSizeOfRawData = P.FileSize - P.getEntryPoint();
-		if(Mode == MODE_HARDCORE || SizeOfHeaders > P.FileSize)
-			oFileSize = P.FileSize;
-		else 
-			oFileSize = SizeOfHeaders;
+	// round down PointerToRawData to nearest FileAlignment		
+	EPPointerToRawData = roundDown(P.getExecSection()->PointerToRawData, FileAlignment);
+	EPVirtualAddress = P.getExecSection()->VirtualAddress;
+
+	// not a valid pe
+	if( (EPPointerToRawData > P.FileSize) || 
+		(P.getEntryPoint() - EPVirtualAddress > EPSizeOfRawData) || 
+		(P.getEntryPoint() - EPVirtualAddress > P.FileSize) ||
+		(P.getEntryPoint() - EPVirtualAddress) + EPPointerToRawData > P.FileSize
+		)
+		return result;
+
+	if( (EPSizeOfRawData > P.FileSize) || (EPPointerToRawData + EPSizeOfRawData > P.FileSize) )
+		EPSizeOfRawData = P.FileSize - EPPointerToRawData;
+
+	EPAddr = P.LoadAddr + (P.getEntryPoint() - EPVirtualAddress) + EPPointerToRawData;
+
+	// scan the whole file with signatures that have ep_only = false
+	if(Mode == MODE_HARDCORE)
+	{
+		oFileSize = P.FileSize;
 		oLoadAddr = P.LoadAddr;
-		EPAddr = P.LoadAddr + P.getEntryPoint();
 	}
-	else {
-		// round up SizeOfRawData
-		EPSizeOfRawData = roundUp(P.getExecSection()->SizeOfRawData, FileAlignment);
-		EPSizeOfRawData = min(P.getExecSection()->Misc.VirtualSize, EPSizeOfRawData);
+	else
+	{			
+		oFileSize = EPSizeOfRawData;
+		SecAddr = P.LoadAddr + EPPointerToRawData;
 
-		// round down PointerToRawData to nearest FileAlignment		
-		EPPointerToRawData = roundDown(P.getExecSection()->PointerToRawData, FileAlignment);
-		EPVirtualAddress = P.getExecSection()->VirtualAddress;
-
-		// not a valid pe
-		if( (EPPointerToRawData > P.FileSize) || 
-			(P.getEntryPoint() - EPVirtualAddress > EPSizeOfRawData) || 
-			(P.getEntryPoint() - EPVirtualAddress > P.FileSize) ||
-			(P.getEntryPoint() - EPVirtualAddress) + EPPointerToRawData > P.FileSize
-			)
-			return result;
-
-		if( (EPSizeOfRawData > P.FileSize) || (EPPointerToRawData + EPSizeOfRawData > P.FileSize) )
-			EPSizeOfRawData = P.FileSize - EPPointerToRawData;
-
-		EPAddr = P.LoadAddr + (P.getEntryPoint() - EPVirtualAddress) + EPPointerToRawData;
-
-		// scan the whole file with signatures that have ep_only = false
-		if(Mode == MODE_HARDCORE)
-		{
-			oFileSize = P.FileSize;
-			oLoadAddr = P.LoadAddr;
-		}
-		else
-		{			
+		if(Mode == MODE_DEEP) {
 			oFileSize = EPSizeOfRawData;
-			SecAddr = P.LoadAddr + EPPointerToRawData;
-
-			if(Mode == MODE_DEEP) {
-				oFileSize = EPSizeOfRawData;
-				oLoadAddr = SecAddr;										// scan the whole section of entry point with signatures that have ep_oly = false
-			}
-			else {															// MODE_NORMAL
-				oLoadAddr = EPAddr;
-			}
-
+			oLoadAddr = SecAddr;										// scan the whole section of entry point with signatures that have ep_oly = false
 		}
-	}
+		else {															// MODE_NORMAL
+			oLoadAddr = EPAddr;
+		}
+
+	}	
 		
 
 	for(unsigned int k = 0; k < Signatures.size(); k++)
@@ -287,7 +276,7 @@ string PackiD::scanPE(PE &P)
 
 				//else treat it as match
 			}
-
+			
 			// check the rest of unaligned signature, byte by byte
 			j = j * sizeof(CHUNK);
 			if(j < (SigSize) && match)
